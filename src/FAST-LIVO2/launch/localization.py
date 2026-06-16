@@ -74,23 +74,23 @@ def generate_launch_description():
     ld.add_action(rviz_cmd)
 
     # Initial Pose Publisher Node (only runs if use_pose_pub is True)
-    initial_pose_pub = Node(
-        condition=IfCondition(use_pose_pub),
-        package='initial_pose_publisher',
-        executable='initial_pose_publisher',
-        name='initial_pose_publisher',
-        parameters=[{
-            'map_frame': 'camera_init',
-            'x': x,
-            'y': y,
-            'z': z,
-            'roll': roll,
-            'pitch': pitch,
-            'yaw': yaw,
-            'use_sim_time': use_sim_time
-        }],
-        output='screen'
-    )
-    ld.add_action(initial_pose_pub)
+    # initial_pose_pub = Node(
+    #     condition=IfCondition(use_pose_pub),
+    #     package='initial_pose_publisher',
+    #     executable='initial_pose_publisher',
+    #     name='initial_pose_publisher',
+    #     parameters=[{
+    #         'map_frame': 'camera_init',
+    #         'x': x,
+    #         'y': y,
+    #         'z': z,
+    #         'roll': roll,
+    #         'pitch': pitch,
+    #         'yaw': yaw,
+    #         'use_sim_time': use_sim_time
+    #     }],
+    #     output='screen'
+    # )
+    # ld.add_action(initial_pose_pub)
 
     return ld
