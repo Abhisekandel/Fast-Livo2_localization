@@ -234,6 +234,8 @@ void LIVMapper::initializeSubscribersAndPublishers(rclcpp::Node::SharedPtr &nh, 
   }
   sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 200000, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
   sub_img = nh->create_subscription<sensor_msgs::msg::Image>(img_topic, 200000, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
+  auto initial_pose_qos = rclcpp::QoS(10).transient_local();
+  sub_initial_pose = nh->create_subscription<geometry_msgs::msg::PoseStamped>("/initialpose", initial_pose_qos, std::bind(&LIVMapper::initial_pose_cbk, this, std::placeholders::_1));
 
   pubLaserCloudFullRes = nh->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 100);
   pubNormal = nh->create_publisher<visualization_msgs::msg::MarkerArray>("visualization_marker", 100);
@@ -602,6 +604,12 @@ void LIVMapper::run()
 
     processImu();
 
+    // After IMU init completes, apply deferred initial pose if one was received
+    if (!p_imu->imu_need_init && initial_pose_received_ && !initial_pose_applied_)
+    {
+      applyDeferredInitialPose();
+    }
+
     // if (!p_imu->imu_time_init) continue;
 
     stateEstimationAndMapping();
@@ -748,6 +756,86 @@ void LIVMapper::RGBpointBodyToWorld(PointType const *const pi, PointType *const 
   po->y = p_global(1);
   po->z = p_global(2);
   po->intensity = pi->intensity;
+}
+
+void LIVMapper::initial_pose_cbk(const geometry_msgs::msg::PoseStamped::ConstPtr &msg_in)
+{
+  deferred_initial_pos_(0) = msg_in->pose.position.x;
+  deferred_initial_pos_(1) = msg_in->pose.position.y;
+  deferred_initial_pos_(2) = msg_in->pose.position.z;
+  deferred_initial_rot_ = Eigen::Quaterniond(
+    msg_in->pose.orientation.w,
+    msg_in->pose.orientation.x,
+    msg_in->pose.orientation.y,
+    msg_in->pose.orientation.z
+  ).toRotationMatrix();
+  initial_pose_received_ = true;
+  initial_pose_applied_ = false;
+  
+  RCLCPP_INFO(nh_->get_logger(), "Received initial pose: [%.3f, %.3f, %.3f]. Will apply after IMU initialization.",
+              deferred_initial_pos_(0), deferred_initial_pos_(1), deferred_initial_pos_(2));
+}
+
+void LIVMapper::applyDeferredInitialPose()
+{
+  std::lock_guard<std::mutex> lock(mtx_buffer);
+  
+  _state.pos_end = deferred_initial_pos_;
+  _state.rot_end = deferred_initial_rot_;
+  
+  // Reset velocity to zero
+  _state.vel_end = V3D::Zero();
+  
+  // Reset covariance matrix to allow the filter to accept the new pose and measurements
+  _state.cov = MD(DIM_STATE, DIM_STATE)::Identity() * INIT_COV;
+  _state.cov(6, 6) = 0.00001;
+  _state.cov.block<9, 9>(10, 10) = MD(9, 9)::Identity() * 0.00001;
+
+  // Align gravity to point straight down in the map/world frame
+  _state.gravity = V3D(0.0, 0.0, -G_m_s2);
+  
+  // Sync propagate and other EKF states
+  state_propagat.pos_end = _state.pos_end;
+  state_propagat.rot_end = _state.rot_end;
+  state_propagat.vel_end = _state.vel_end;
+  state_propagat.gravity = _state.gravity;
+  state_propagat.cov = _state.cov;
+
+  latest_ekf_state.pos_end = _state.pos_end;
+  latest_ekf_state.rot_end = _state.rot_end;
+  latest_ekf_state.vel_end = _state.vel_end;
+  latest_ekf_state.gravity = _state.gravity;
+  latest_ekf_state.cov = _state.cov;
+
+  imu_propagate.pos_end = _state.pos_end;
+  imu_propagate.rot_end = _state.rot_end;
+  imu_propagate.vel_end = _state.vel_end;
+  imu_propagate.gravity = _state.gravity;
+  imu_propagate.cov = _state.cov;
+  
+  // Reset map or reload prebuilt map
+  if (!voxeloctree_file_path.empty())
+  {
+    loadPrebuiltMap(voxeloctree_file_path);
+  }
+  else
+  {
+    for (auto &pair : voxel_map)
+    {
+      delete pair.second;
+    }
+    voxel_map.clear();
+  }
+  lidar_map_inited = false;
+  
+  path.poses.clear();
+  
+  initial_pose_applied_ = true;
+  
+  Eigen::Quaterniond q_log(deferred_initial_rot_);
+  RCLCPP_INFO(nh_->get_logger(), "Applied initial pose: pos [%.3f, %.3f, %.3f], rot [%.3f, %.3f, %.3f, %.3f]. Map reset.", 
+              _state.pos_end(0), _state.pos_end(1), _state.pos_end(2),
+              q_log.x(), q_log.y(), q_log.z(), q_log.w());
 }
 
 void LIVMapper::standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstPtr &msg)

@@ -73,24 +73,32 @@ def generate_launch_description():
     )
     ld.add_action(rviz_cmd)
 
-    # Initial Pose Publisher Node (only runs if use_pose_pub is True)
-    # initial_pose_pub = Node(
-    #     condition=IfCondition(use_pose_pub),
-    #     package='initial_pose_publisher',
-    #     executable='initial_pose_publisher',
-    #     name='initial_pose_publisher',
-    #     parameters=[{
-    #         'map_frame': 'camera_init',
-    #         'x': x,
-    #         'y': y,
-    #         'z': z,
-    #         'roll': roll,
-    #         'pitch': pitch,
-    #         'yaw': yaw,
-    #         'use_sim_time': use_sim_time
-    #     }],
-    #     output='screen'
-    # )
-    # ld.add_action(initial_pose_pub)
-
+# Initial Pose Publisher Node (only runs if use_pose_pub is True)
+    initial_pose_pub = Node(
+        condition=IfCondition(use_pose_pub),
+        package='initial_pose_publisher',
+        executable='initial_pose_publisher',
+        name='initial_pose_publisher',
+        parameters=[{
+            'map_frame': 'camera_init',
+            
+            # Your exact 120-second global transformation matrix
+            'localization_matrix': [
+                -0.530889,  0.596476, -0.601974, -2.099868,
+                -0.492068, -0.795299, -0.354075, -12.561502,
+                -0.689947,  0.108238,  0.715723, -0.465683,
+                 0.0,       0.0,       0.0,       1.0
+            ],
+            
+            'x': x,
+            'y': y,
+            'z': z,
+            'roll': roll,
+            'pitch': pitch,
+            'yaw': yaw,
+            'use_sim_time': use_sim_time
+        }],
+        output='screen'
+    )
+    ld.add_action(initial_pose_pub)
     return ld

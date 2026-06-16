@@ -41,6 +41,7 @@ public:
   void initializeComponents();
   void initializeFiles();
   void run();
+  void applyDeferredInitialPose();
   void gravityAlignment();
   void handleFirstFrame();
   void stateEstimationAndMapping();
@@ -60,6 +61,7 @@ public:
   void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::ConstPtr &msg_in);
   void imu_cbk(const sensor_msgs::msg::Imu::ConstPtr &msg_in);
   void img_cbk(const sensor_msgs::msg::Image::ConstPtr &msg_in);
+  void initial_pose_cbk(const geometry_msgs::msg::PoseStamped::ConstPtr &msg_in);
   void publish_img_rgb(const image_transport::Publisher &pubImage, VIOManagerPtr vio_manager);
   void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFullRes, VIOManagerPtr vio_manager);
   void publish_visual_sub_map(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubSubVisualMap);
@@ -175,6 +177,7 @@ public:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_img;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_initial_pose;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubNormal;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubSubVisualMap;
@@ -192,6 +195,12 @@ public:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubMapVisualization;
   rclcpp::TimerBase::SharedPtr map_pub_timer;
   std::string voxeloctree_file_path;
+
+  // Deferred initial pose: stored when received, applied after IMU init completes
+  bool initial_pose_received_ = false;
+  bool initial_pose_applied_ = false;
+  V3D deferred_initial_pos_ = V3D::Zero();
+  M3D deferred_initial_rot_ = M3D::Identity();
 
   int frame_num = 0;
   double aver_time_consu = 0;
