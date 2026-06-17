@@ -1346,6 +1346,7 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::Po
             laserCloudWorldRGB->push_back(pointRGB);
         }
       }
+      //pcl_wait_pub->clear();
     }
     else
     {
