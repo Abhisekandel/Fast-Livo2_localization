@@ -6,7 +6,7 @@
       imu_topic: "/livox/imu"
       img_en: 1
       lidar_en: 1
-      ros_driver_bug_fix: false
+      ros_driver_bug_fix: true
 
     extrin_calib:
       extrinsic_T: [0.04165, 0.02326, -0.0284]
@@ -55,8 +55,8 @@
       min_eigen_value: 0.0025 # 0.005
       voxel_size: 0.5
       max_layer: 2
-      max_points_num: 50
-      layer_init_num: [5, 5, 5, 5, 5]
+      max_points_num: 0
+      layer_init_num: [999999, 999999, 999999, 999999, 999999]
 
     local_map:  
       map_sliding_en: false

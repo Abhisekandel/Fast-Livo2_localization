@@ -476,8 +476,8 @@ void LIVMapper::handleLIO()
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
     voxelmap_manager->pv_list_[i].var = var;
   }
-  voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  // std::cout << "[ LIO ] Update Voxel Map" << std::endl;
   _pv_list = voxelmap_manager->pv_list_;
 
   double t4 = omp_get_wtime();
