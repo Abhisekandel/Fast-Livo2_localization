@@ -419,17 +419,6 @@ void LIVMapper::handleLIO()
   voxelmap_manager->StateEstimation(state_propagat);
   _state = voxelmap_manager->state_;
   _pv_list = voxelmap_manager->pv_list_;
-  _pv_list.resize(voxelmap_manager->effct_feat_num_);
-  for (int i = 0; i < voxelmap_manager->effct_feat_num_; i++)
-  {
-    V3D point_b = _pv_list[i].point_b;
-    M3D point_crossmat;
-    point_crossmat << SKEW_SYM_MATRX(point_b);
-    M3D var = _pv_list[i].body_var;
-    var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
-          (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
-    _pv_list[i].var = var;
-  }
 
   double t2 = omp_get_wtime();
 
@@ -487,8 +476,9 @@ void LIVMapper::handleLIO()
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
     voxelmap_manager->pv_list_[i].var = var;
   }
-  voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  // std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  _pv_list = voxelmap_manager->pv_list_;
 
   double t4 = omp_get_wtime();
 
