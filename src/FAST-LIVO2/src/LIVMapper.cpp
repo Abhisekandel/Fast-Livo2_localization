@@ -419,6 +419,17 @@ void LIVMapper::handleLIO()
   voxelmap_manager->StateEstimation(state_propagat);
   _state = voxelmap_manager->state_;
   _pv_list = voxelmap_manager->pv_list_;
+  _pv_list.resize(voxelmap_manager->effct_feat_num_);
+  for (int i = 0; i < voxelmap_manager->effct_feat_num_; i++)
+  {
+    V3D point_b = _pv_list[i].point_b;
+    M3D point_crossmat;
+    point_crossmat << SKEW_SYM_MATRX(point_b);
+    M3D var = _pv_list[i].body_var;
+    var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
+          (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
+    _pv_list[i].var = var;
+  }
 
   double t2 = omp_get_wtime();
 
@@ -476,9 +487,8 @@ void LIVMapper::handleLIO()
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
     voxelmap_manager->pv_list_[i].var = var;
   }
-  // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  // std::cout << "[ LIO ] Update Voxel Map" << std::endl;
-  _pv_list = voxelmap_manager->pv_list_;
+  voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  std::cout << "[ LIO ] Update Voxel Map" << std::endl;
 
   double t4 = omp_get_wtime();
 
@@ -780,6 +790,9 @@ void LIVMapper::applyDeferredInitialPose()
 {
   std::lock_guard<std::mutex> lock(mtx_buffer);
   
+  // Compute new gravity before overwriting rot_end
+  V3D new_gravity = deferred_initial_rot_ * _state.rot_end.transpose() * _state.gravity;
+  
   _state.pos_end = deferred_initial_pos_;
   _state.rot_end = deferred_initial_rot_;
   
@@ -791,8 +804,8 @@ void LIVMapper::applyDeferredInitialPose()
   _state.cov(6, 6) = 0.00001;
   _state.cov.block<9, 9>(10, 10) = MD(9, 9)::Identity() * 0.00001;
 
-  // Align gravity to point straight down in the map/world frame
-  _state.gravity = V3D(0.0, 0.0, -G_m_s2);
+  // Apply the newly computed gravity
+  _state.gravity = new_gravity;
   
   // Sync propagate and other EKF states
   state_propagat.pos_end = _state.pos_end;
@@ -820,13 +833,13 @@ void LIVMapper::applyDeferredInitialPose()
   }
   else
   {
-    for (auto &pair : voxel_map)
+    for (auto &pair : voxelmap_manager->voxel_map_)
     {
       delete pair.second;
     }
-    voxel_map.clear();
+    voxelmap_manager->voxel_map_.clear();
+    lidar_map_inited = false;
   }
-  lidar_map_inited = false;
   
   path.poses.clear();
   
