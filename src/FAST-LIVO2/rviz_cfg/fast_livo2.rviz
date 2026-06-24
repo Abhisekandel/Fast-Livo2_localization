@@ -121,6 +121,7 @@ Visualization Manager:
       Name: mapping
 
     - Class: rviz_default_plugins/MarkerArray
+      Name: prebuilt_voxels
       Topic:
         Depth: 5
         Durability Policy: Volatile

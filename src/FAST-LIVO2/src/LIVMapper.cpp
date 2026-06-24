@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "LIVMapper.h"
+#include <pcl/kdtree/kdtree_flann.h>
 
 LIVMapper::LIVMapper(rclcpp::Node::SharedPtr &nh)
     : nh_(nh), extT(0, 0, 0),
@@ -1528,10 +1529,38 @@ std::vector<FastLioVoxel> LIVMapper::loadVoxelOctree(const std::string& file_pat
 }
 
 void LIVMapper::loadPrebuiltMap(const std::string& file_path) {
+    std::cout << "Loading prebuilt map from: " << file_path << std::endl;
     std::vector<FastLioVoxel> map_data = loadVoxelOctree(file_path);
     if (map_data.empty()) {
-        std::cerr << "Warning: Loaded voxel map is empty!" << std::endl;
+        std::cerr << "Failed to load map data or map is empty." << std::endl;
         return;
+    }
+    
+    prebuilt_voxels_ = map_data;
+    prebuilt_voxel_sizes_.reserve(map_data.size());
+
+    // Compute voxel sizes using KD-Tree to recover octree layer depths
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    cloud->points.reserve(map_data.size());
+    for (const auto& voxel : map_data) {
+        cloud->points.emplace_back(voxel.center[0], voxel.center[1], voxel.center[2]);
+    }
+    
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    kdtree.setInputCloud(cloud);
+    std::vector<int> pointIdx(2);
+    std::vector<float> pointDistSq(2);
+    
+    for (size_t i = 0; i < cloud->points.size(); ++i) {
+        double scale = 0.5;
+        if (kdtree.nearestKSearch(cloud->points[i], 2, pointIdx, pointDistSq) > 0) {
+            float d = std::sqrt(pointDistSq[1]);
+            if (d < 0.09) scale = 0.0625;
+            else if (d < 0.18) scale = 0.125;
+            else if (d < 0.35) scale = 0.25;
+            else scale = 0.5;
+        }
+        prebuilt_voxel_sizes_.push_back(scale);
     }
 
     double voxel_size = voxelmap_manager->config_setting_.max_voxel_size_;
@@ -1546,7 +1575,16 @@ void LIVMapper::loadPrebuiltMap(const std::string& file_path) {
     }
     voxelmap_manager->voxel_map_.clear();
 
-    for (const auto& voxel : map_data) {
+    for (size_t i = 0; i < map_data.size(); ++i) {
+        const auto& voxel = map_data[i];
+        double scale = prebuilt_voxel_sizes_[i];
+
+        int target_layer = 0;
+        if (scale < 0.09) target_layer = 3;
+        else if (scale < 0.18) target_layer = 2;
+        else if (scale < 0.35) target_layer = 1;
+        else target_layer = 0;
+
         float loc_xyz[3];
         for (int j = 0; j < 3; j++) {
             loc_xyz[j] = voxel.center[j] / voxel_size;
@@ -1554,37 +1592,65 @@ void LIVMapper::loadPrebuiltMap(const std::string& file_path) {
         }
         VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1], (int64_t)loc_xyz[2]);
         
-        // Allocate and populate VoxelOctoTree nodes directly
-        int init_pts_threshold = layer_init_num.empty() ? 5 : layer_init_num[0];
-        VoxelOctoTree *octo_tree = new VoxelOctoTree(max_layer, 0, init_pts_threshold, max_points_num, planer_threshold);
-        octo_tree->layer_init_num_ = layer_init_num;
-        octo_tree->quater_length_ = voxel_size / 4.0;
-        octo_tree->voxel_center_[0] = (0.5 + position.x) * voxel_size;
-        octo_tree->voxel_center_[1] = (0.5 + position.y) * voxel_size;
-        octo_tree->voxel_center_[2] = (0.5 + position.z) * voxel_size;
+        VoxelOctoTree* root_node = nullptr;
+        if (voxelmap_manager->voxel_map_.find(position) == voxelmap_manager->voxel_map_.end()) {
+            int init_pts_threshold = layer_init_num.empty() ? 5 : layer_init_num[0];
+            root_node = new VoxelOctoTree(max_layer, 0, init_pts_threshold, max_points_num, planer_threshold);
+            root_node->layer_init_num_ = layer_init_num;
+            root_node->quater_length_ = voxel_size / 4.0;
+            root_node->voxel_center_[0] = (0.5 + position.x) * voxel_size;
+            root_node->voxel_center_[1] = (0.5 + position.y) * voxel_size;
+            root_node->voxel_center_[2] = (0.5 + position.z) * voxel_size;
+            voxelmap_manager->voxel_map_[position] = root_node;
+        } else {
+            root_node = voxelmap_manager->voxel_map_[position];
+        }
 
-        octo_tree->plane_ptr_ = new VoxelPlane();
-        octo_tree->plane_ptr_->center_[0] = voxel.center[0];
-        octo_tree->plane_ptr_->center_[1] = voxel.center[1];
-        octo_tree->plane_ptr_->center_[2] = voxel.center[2];
+        VoxelOctoTree* current_node = root_node;
         
-        octo_tree->plane_ptr_->normal_[0] = voxel.normal[0];
-        octo_tree->plane_ptr_->normal_[1] = voxel.normal[1];
-        octo_tree->plane_ptr_->normal_[2] = voxel.normal[2];
+        // Traverse down the octree to the target layer
+        for (int l = 0; l < target_layer; ++l) {
+            current_node->octo_state_ = 1; // Mark as subdivided
+            int xyz[3] = {0, 0, 0};
+            if (voxel.center[0] > current_node->voxel_center_[0]) xyz[0] = 1;
+            if (voxel.center[1] > current_node->voxel_center_[1]) xyz[1] = 1;
+            if (voxel.center[2] > current_node->voxel_center_[2]) xyz[2] = 1;
+            int leafnum = 4 * xyz[0] + 2 * xyz[1] + xyz[2];
 
-        octo_tree->plane_ptr_->d_ = voxel.plane_d;
-        octo_tree->plane_ptr_->color_rgba_ = voxel.color_rgba;
-        octo_tree->plane_ptr_->is_prebuilt_ = true;
-        octo_tree->plane_ptr_->is_plane_ = true;
-        octo_tree->plane_ptr_->is_init_ = true;
+            if (current_node->leaves_[leafnum] == nullptr) {
+                int init_pts = layer_init_num.size() > current_node->layer_ + 1 ? layer_init_num[current_node->layer_ + 1] : 5;
+                current_node->leaves_[leafnum] = new VoxelOctoTree(max_layer, current_node->layer_ + 1, init_pts, max_points_num, planer_threshold);
+                current_node->leaves_[leafnum]->layer_init_num_ = layer_init_num;
+                current_node->leaves_[leafnum]->quater_length_ = current_node->quater_length_ / 2.0;
+                current_node->leaves_[leafnum]->voxel_center_[0] = current_node->voxel_center_[0] + (2 * xyz[0] - 1) * current_node->quater_length_;
+                current_node->leaves_[leafnum]->voxel_center_[1] = current_node->voxel_center_[1] + (2 * xyz[1] - 1) * current_node->quater_length_;
+                current_node->leaves_[leafnum]->voxel_center_[2] = current_node->voxel_center_[2] + (2 * xyz[2] - 1) * current_node->quater_length_;
+            }
+            current_node = current_node->leaves_[leafnum];
+        }
+
+        current_node->plane_ptr_ = new VoxelPlane();
+        current_node->plane_ptr_->center_[0] = voxel.center[0];
+        current_node->plane_ptr_->center_[1] = voxel.center[1];
+        current_node->plane_ptr_->center_[2] = voxel.center[2];
         
-        octo_tree->plane_ptr_->min_eigen_value_ = 0.001;
-        octo_tree->plane_ptr_->mid_eigen_value_ = 0.1;
-        octo_tree->plane_ptr_->max_eigen_value_ = 0.1;
-        octo_tree->plane_ptr_->radius_ = sqrt(0.1);
-        octo_tree->plane_ptr_->plane_var_ = Eigen::Matrix<double, 6, 6>::Identity() * 0.01;
+        current_node->plane_ptr_->normal_[0] = voxel.normal[0];
+        current_node->plane_ptr_->normal_[1] = voxel.normal[1];
+        current_node->plane_ptr_->normal_[2] = voxel.normal[2];
 
-        Eigen::Vector3d normal = octo_tree->plane_ptr_->normal_;
+        current_node->plane_ptr_->d_ = voxel.plane_d;
+        current_node->plane_ptr_->color_rgba_ = voxel.color_rgba;
+        current_node->plane_ptr_->is_prebuilt_ = true;
+        current_node->plane_ptr_->is_plane_ = true;
+        current_node->plane_ptr_->is_init_ = true;
+        
+        current_node->plane_ptr_->min_eigen_value_ = 0.001;
+        current_node->plane_ptr_->mid_eigen_value_ = 0.1;
+        current_node->plane_ptr_->max_eigen_value_ = 0.1;
+        current_node->plane_ptr_->radius_ = sqrt(0.1);
+        current_node->plane_ptr_->plane_var_ = Eigen::Matrix<double, 6, 6>::Identity() * 0.01;
+
+        Eigen::Vector3d normal = current_node->plane_ptr_->normal_;
         Eigen::Vector3d tangent1, tangent2;
         if (std::abs(normal(2)) < 0.9) {
             tangent1 = normal.cross(Eigen::Vector3d(0, 0, 1)).normalized();
@@ -1593,63 +1659,76 @@ void LIVMapper::loadPrebuiltMap(const std::string& file_path) {
         }
         tangent2 = normal.cross(tangent1).normalized();
         
-        octo_tree->plane_ptr_->x_normal_ = tangent1;
-        octo_tree->plane_ptr_->y_normal_ = tangent2;
-
-        voxelmap_manager->voxel_map_[position] = octo_tree;
+        current_node->plane_ptr_->x_normal_ = tangent1;
+        current_node->plane_ptr_->y_normal_ = tangent2;
     }
     this->lidar_map_inited = true;
-    std::cout << "Voxel map pre-initialized with " << voxelmap_manager->voxel_map_.size() << " voxels from file." << std::endl;
+    std::cout << "Voxel map pre-initialized with " << voxelmap_manager->voxel_map_.size() << " root voxels from file." << std::endl;
 }
 
 void LIVMapper::publishMapVisualization() {
-    if (voxelmap_manager->voxel_map_.empty()) return;
+    if (prebuilt_voxels_.empty()) return;
 
     visualization_msgs::msg::MarkerArray marker_array;
-    visualization_msgs::msg::Marker marker;
+    const int MAX_VOXELS_PER_MARKER = 20000;
+    int marker_id = 0;
     
-    marker.header.frame_id = "camera_init";
-    marker.header.stamp = nh_->now();
-    marker.ns = "prebuilt_voxels";
-    marker.id = 0;
-    marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
-    marker.action = visualization_msgs::msg::Marker::ADD;
+    std::unordered_map<double, visualization_msgs::msg::Marker> scale_to_marker;
 
-    // Set size of each voxel cube
-    double voxel_size = voxelmap_manager->config_setting_.max_voxel_size_;
-    marker.scale.x = voxel_size;
-    marker.scale.y = voxel_size;
-    marker.scale.z = voxel_size;
+    auto create_new_marker = [&](double scale) {
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "camera_init";
+        marker.header.stamp = nh_->now();
+        marker.ns = "prebuilt_voxels_cubes";
+        marker.id = marker_id++;
+        marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.scale.x = scale;
+        marker.scale.y = scale;
+        marker.scale.z = scale;
+        marker.pose.orientation.w = 1.0;
+        marker.points.reserve(MAX_VOXELS_PER_MARKER);
+        marker.colors.reserve(MAX_VOXELS_PER_MARKER);
+        return marker;
+    };
 
-    // Identity orientation for axis-aligned voxel cubes
-    marker.pose.orientation.w = 1.0;
-    marker.pose.orientation.x = 0.0;
-    marker.pose.orientation.y = 0.0;
-    marker.pose.orientation.z = 0.0;
+    for (size_t i = 0; i < prebuilt_voxels_.size(); ++i) {
+        const auto& voxel = prebuilt_voxels_[i];
+        double scale = prebuilt_voxel_sizes_[i];
 
-    marker.points.reserve(voxelmap_manager->voxel_map_.size());
-    marker.colors.reserve(voxelmap_manager->voxel_map_.size());
+        if (scale_to_marker.find(scale) == scale_to_marker.end()) {
+            scale_to_marker[scale] = create_new_marker(scale);
+        }
 
-    for (const auto& pair : voxelmap_manager->voxel_map_) {
-        VoxelOctoTree *oct = pair.second;
-        if (!oct || !oct->plane_ptr_) continue;
-        if (!oct->plane_ptr_->is_prebuilt_) continue;
-        
-        geometry_msgs::msg::Point p;
-        p.x = oct->plane_ptr_->center_[0];
-        p.y = oct->plane_ptr_->center_[1];
-        p.z = oct->plane_ptr_->center_[2];
-        marker.points.push_back(p);
+        visualization_msgs::msg::Marker& current_marker = scale_to_marker[scale];
+
+        // Align the center to the perfect octree grid
+        geometry_msgs::msg::Point gp;
+        gp.x = std::floor(voxel.center[0] / scale) * scale + scale / 2.0;
+        gp.y = std::floor(voxel.center[1] / scale) * scale + scale / 2.0;
+        gp.z = std::floor(voxel.center[2] / scale) * scale + scale / 2.0;
 
         std_msgs::msg::ColorRGBA c;
-        uint32_t rgba = oct->plane_ptr_->color_rgba_;
+        uint32_t rgba = voxel.color_rgba;
         c.r = ((rgba >> 16) & 0xFF) / 255.0;
         c.g = ((rgba >> 8) & 0xFF) / 255.0;
         c.b = (rgba & 0xFF) / 255.0;
-        c.a = 0.8; // Semi-transparent for better depth perception
-        marker.colors.push_back(c);
+        c.a = 1.0;
+
+        current_marker.points.push_back(gp);
+        current_marker.colors.push_back(c);
+
+        if (current_marker.points.size() >= MAX_VOXELS_PER_MARKER) {
+            marker_array.markers.push_back(current_marker);
+            scale_to_marker[scale] = create_new_marker(scale);
+        }
     }
 
-    marker_array.markers.push_back(marker);
+    for (auto& pair : scale_to_marker) {
+        if (!pair.second.points.empty()) {
+            marker_array.markers.push_back(pair.second);
+        }
+    }
+
     pubMapVisualization->publish(marker_array);
 }

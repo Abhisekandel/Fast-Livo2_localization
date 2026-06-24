@@ -195,6 +195,8 @@ public:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubMapVisualization;
   rclcpp::TimerBase::SharedPtr map_pub_timer;
   std::string voxeloctree_file_path;
+  std::vector<FastLioVoxel> prebuilt_voxels_;
+  std::vector<double> prebuilt_voxel_sizes_;
 
   // Deferred initial pose: stored when received, applied after IMU init completes
   bool initial_pose_received_ = false;
